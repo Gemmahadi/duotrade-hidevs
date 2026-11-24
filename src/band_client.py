@@ -52,19 +52,27 @@ def post(agent_name, api_key, room_id, text, mention_id=None,
         return _transcript(agent_name, text)
     mentions = ([{"id": mention_id, "handle": mention_handle}]
                 if mention_id and mention_handle else [])
-    try:
-        status, body = _call("POST", f"/chats/{room_id}/messages",
-                             api_key, {"message": {"content": text,
-                                                   "mentions": mentions}})
-        return {"mode": "band", "agent": agent_name, "status": status,
-                "body": body}
-    except urllib.error.HTTPError as e:
-        _transcript(agent_name, f"[Band HTTP {e.code}] {text}")
-        return {"mode": "band-failed", "agent": agent_name,
-                "status": e.code, "body": e.read()[:300].decode(errors="replace")}
-    except Exception as e:  # noqa: BLE001 - network failure must not kill the demo
-        _transcript(agent_name, f"[Band error: {e}] {text}")
-        return {"mode": "band-error", "agent": agent_name, "error": str(e)}
+    last_exc = None
+    for _attempt in range(2):  # one retry: the first call after idle often
+        try:                   # stalls on the egress proxy and times out
+            status, body = _call("POST", f"/chats/{room_id}/messages",
+                                 api_key, {"message": {"content": text,
+                                                       "mentions": mentions}})
+            # Mirror every posted message to the local transcript too, so
+            # the dashboard always shows the real room exchange (the file
+            # is a log of what went to Band, not only a failure fallback).
+            _transcript(agent_name, text)
+            return {"mode": "band", "agent": agent_name, "status": status,
+                    "body": body}
+        except urllib.error.HTTPError as e:
+            _transcript(agent_name, f"[Band HTTP {e.code}] {text}")
+            return {"mode": "band-failed", "agent": agent_name,
+                    "status": e.code,
+                    "body": e.read()[:300].decode(errors="replace")}
+        except Exception as e:  # noqa: BLE001
+            last_exc = e
+    _transcript(agent_name, f"[Band error: {last_exc}] {text}")
+    return {"mode": "band-error", "agent": agent_name, "error": str(last_exc)}
 
 
 def whoami(api_key):
